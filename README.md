@@ -1,4 +1,4 @@
-English | [繁體中文](README_tw.md) | [简体中文](README_zh.md)
+English | [简体中文](README_zh.md)
 
 <p align="left">
     <a href="https://discord.gg/6dn7Sa3a"><img src="https://dcbadge.vercel.app/api/server/DYn29wFk9z?style=flat" alt="Discord Follow"></a>
