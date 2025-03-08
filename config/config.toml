@@ -1,20 +1,7 @@
-[llm.default]
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o"
-temperature = 0.1
+# Global LLM configuration
+[llm]
+model = " " # Replace
+base_url = " " # Replace
+api_key = " "  # Replace
 max_tokens = 4096
-top_p = 1.0
-frequency_penalty = 0.0
-presence_penalty = 0.0
-seed = 42
-
-# Optional: Keep openai section for compatibility
-[llm.openai]
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o"
-temperature = 0.1
-max_tokens = 4096
-top_p = 1.0
-frequency_penalty = 0.0
-presence_penalty = 0.0
-seed = 42
+temperature = 0.0
