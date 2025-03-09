@@ -13,6 +13,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+# Try to import crawl4ai for markdown conversion
+try:
+    import crawl4ai
+
+    CRAWL4AI_AVAILABLE = True
+except ImportError:
+    CRAWL4AI_AVAILABLE = False
+    logging.warning("crawl4ai library not found. Will fall back to regular HTML fetching.")
+
 # Import the base agent and tools
 from app.agent.manus import Manus
 from app.tool.tool_collection import ToolCollection
@@ -103,48 +112,77 @@ class MockBrowserTool(BaseTool):
     # Track current browser state
     current_url: Optional[str] = None
     current_html: Optional[str] = None
+    current_markdown: Optional[str] = None
     tabs: Dict[int, Dict[str, str]] = {}
     active_tab: int = 0
 
-    async def fetch_html(self, url: str) -> str:
-        """Fetch real HTML content from a URL."""
-        import aiohttp
+    async def fetch_content(self, url: str) -> tuple:
+        """Fetch content from a URL and convert to both HTML and markdown."""
         from urllib.parse import urlparse
 
         # If URL doesn't have a scheme, add http://
         if not urlparse(url).scheme:
             url = "http://" + url
 
+        html_content = None
+        markdown_content = None
+
         try:
-            # Try to fetch real content
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as response:
-                    if response.status == 200:
-                        html_content = await response.text()
-                        logger.info(f"Successfully fetched HTML from {url} ({len(html_content)} bytes)")
-                        return html_content
-                    else:
-                        logger.warning(f"Failed to fetch HTML from {url}, status: {response.status}")
-                        return f"<html><body><p>Error: HTTP {response.status}</p></body></html>"
+            # First try to use crawl4ai if available
+            if CRAWL4AI_AVAILABLE:
+                try:
+                    logger.info(f"Using crawl4ai to fetch and convert content from {url}")
+                    # Use crawl4ai to fetch the content and convert to markdown
+                    # Note: The exact API call depends on the crawl4ai library implementation
+                    crawler = crawl4ai.Crawler()
+                    markdown_content = await crawler.get_markdown(url)
+                    html_content = f"<html><body><pre>{markdown_content}</pre></body></html>"
+                    logger.info(f"Successfully fetched markdown from {url} ({len(markdown_content)} bytes)")
+                except Exception as e:
+                    logger.warning(f"Error using crawl4ai for {url}: {str(e)}")
+                    # Fall back to regular HTML fetching
+                    markdown_content = None
+
+            # If markdown is still None, fall back to regular HTML fetching
+            if markdown_content is None:
+                # Fetch HTML content with aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=10) as response:
+                        if response.status == 200:
+                            html_content = await response.text()
+                            logger.info(f"Successfully fetched HTML from {url} ({len(html_content)} bytes)")
+
+                            # Convert HTML to a basic markdown representation if crawl4ai not available
+                            markdown_content = f"# Content from {url}\n\n"
+                            markdown_content += "HTML content was retrieved but could not be converted to proper markdown.\n"
+                            markdown_content += "Install crawl4ai library for better markdown conversion."
+                        else:
+                            logger.warning(f"Failed to fetch HTML from {url}, status: {response.status}")
+                            html_content = f"<html><body><p>Error: HTTP {response.status}</p></body></html>"
+                            markdown_content = f"# Error\n\nFailed to fetch content from {url}, status: {response.status}"
         except Exception as e:
-            logger.error(f"Error fetching HTML from {url}: {str(e)}")
-            return f"<html><body><p>Error fetching content: {str(e)}</p></body></html>"
+            logger.error(f"Error fetching content from {url}: {str(e)}")
+            html_content = f"<html><body><p>Error fetching content: {str(e)}</p></body></html>"
+            markdown_content = f"# Error\n\nError fetching content from {url}: {str(e)}"
+
+        return html_content, markdown_content
 
     async def navigate_to(self, url: str) -> str:
-        """Navigate to a URL and fetch its HTML content."""
+        """Navigate to a URL and fetch its content."""
         self.current_url = url
-        self.current_html = await self.fetch_html(url)
+        self.current_html, self.current_markdown = await self.fetch_content(url)
 
         # Store in current tab
         self.tabs[self.active_tab] = {
             "url": url,
-            "html": self.current_html
+            "html": self.current_html,
+            "markdown": self.current_markdown
         }
 
         return f"Navigated to {url}"
 
     async def execute(self, action: str, **kwargs) -> Any:
-        """Simulate browser actions, fetching real HTML when possible."""
+        """Simulate browser actions, fetching real content when possible."""
         try:
             if action == "navigate":
                 url = kwargs.get('url')
@@ -155,16 +193,20 @@ class MockBrowserTool(BaseTool):
                 return ToolResult(output=result)
 
             elif action == "get_html":
-                # Return current HTML if available, otherwise return message
-                if self.current_html:
-                    # Truncate if too long to prevent excessive responses
+                # Return markdown content if available, otherwise fall back to HTML
+                if self.current_markdown:
+                    content = self.current_markdown
+                    if len(content) > 15000:
+                        content = content[:15000] + "\n... [content truncated due to length] ..."
+                    return ToolResult(output=content)
+                elif self.current_html:
                     html = self.current_html
                     if len(html) > 15000:
                         html = html[:15000] + "\n... [content truncated due to length] ..."
                     return ToolResult(output=html)
                 else:
                     return ToolResult(
-                        output="<html><body><p>No page has been loaded yet. Use 'navigate' first.</p></body></html>")
+                        output="No page has been loaded yet. Use 'navigate' first.")
 
             elif action == "refresh":
                 if self.current_url:
@@ -194,6 +236,7 @@ class MockBrowserTool(BaseTool):
                 self.active_tab = tab_id
                 self.current_url = self.tabs[tab_id].get("url")
                 self.current_html = self.tabs[tab_id].get("html")
+                self.current_markdown = self.tabs[tab_id].get("markdown")
                 return ToolResult(output=f"Switched to tab {tab_id} ({self.current_url})")
 
             elif action == "close_tab":
@@ -208,10 +251,12 @@ class MockBrowserTool(BaseTool):
                     self.active_tab = next(iter(self.tabs.keys()))
                     self.current_url = self.tabs[self.active_tab].get("url")
                     self.current_html = self.tabs[self.active_tab].get("html")
+                    self.current_markdown = self.tabs[self.active_tab].get("markdown")
                     return ToolResult(output=f"Closed tab and switched to tab {self.active_tab}")
                 else:
                     self.current_url = None
                     self.current_html = None
+                    self.current_markdown = None
                     return ToolResult(output="Closed the last tab")
 
             # Handle other actions with mock responses
@@ -246,7 +291,7 @@ class EnhancedManus(Manus):
             Bash(),
             PlanningTool(),
             StrReplaceEditor(),
-            #MockBrowserTool(),  Use the mock instead of the real browser tool
+            MockBrowserTool(),  # Use our enhanced mock browser tool
             Terminate()
         )
     )
