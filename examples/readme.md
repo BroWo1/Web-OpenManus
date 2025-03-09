@@ -1,5 +1,7 @@
 # Examples
-We put some examples in the `examples` directory. All the examples use the same prompt as [Manus](https://manus.im/?utm_source=ai-bot.cn). 
+
+We put some examples in the `examples` directory. All the examples use the same prompt
+as [Manus](https://manus.im/?utm_source=ai-bot.cn).
 
 The Model we use is `claude3.5`.
 
