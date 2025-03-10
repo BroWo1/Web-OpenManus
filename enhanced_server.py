@@ -2,15 +2,18 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional, Callable, Any
+import os
+import uuid
+from typing import Dict, List, Optional, Callable, Any, Set
+
 
 # Add aiohttp for HTML fetching in the MockBrowserTool
 import aiohttp
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 # Try to import crawl4ai for markdown conversion
@@ -36,6 +39,12 @@ from app.tool.base import BaseTool, ToolResult
 from app.logger import logger
 from app.agent.base import BaseAgent
 from app.agent.toolcall import ToolCallAgent
+import asyncio
+import sys
+
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 
 # Configure logging for development
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +59,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Directory for storing files that will be available for download
+FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_files")
+os.makedirs(FILES_DIR, exist_ok=True)
 
 
 # Custom log handler to capture logs for specific clients
@@ -69,232 +82,262 @@ class WSLogHandler(logging.Handler):
             ))
 
 
-# Create a mock browser tool that doesn't require actual browser installation
-class MockBrowserTool(BaseTool):
-    name: str = "browser_use"
-    description: str = "Interact with a web browser (server environment simulation)"
+# File information model
+class FileInfo(BaseModel):
+    file_id: str
+    file_path: str
+    file_name: str
+    content_type: str = "application/octet-stream"
+    description: str = ""
+    size: int = 0
+
+    def to_dict(self):
+        return {
+            "file_id": self.file_id,
+            "file_name": self.file_name,
+            "content_type": self.content_type,
+            "description": self.description,
+            "size": self.size,
+            "download_url": f"/api/files/{self.file_id}"
+        }
+
+
+# Web content fetch tool that uses crawl4ai for extracting structured content
+class WebContentTool(BaseTool):
+    name: str = "browser_use"  # Keep same name for backward compatibility
+    description: str = "Fetch and extract structured content from websites using crawl4ai, or read local files"
     parameters: dict = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": [
-                    "navigate", "click", "input_text", "screenshot", "get_html",
-                    "execute_js", "scroll", "switch_tab", "new_tab", "close_tab", "refresh"
-                ],
-                "description": "The browser action to perform",
+                "enum": ["navigate", "get_html"],
+                "description": "The action to perform: 'navigate' to fetch content from a URL, 'get_html' to view current content",
             },
             "url": {
                 "type": "string",
-                "description": "URL for 'navigate' or 'new_tab' actions",
-            },
-            "index": {
-                "type": "integer",
-                "description": "Element index for 'click' or 'input_text' actions",
-            },
-            "text": {"type": "string", "description": "Text for 'input_text' action"},
-            "script": {
-                "type": "string",
-                "description": "JavaScript code for 'execute_js' action",
-            },
-            "scroll_amount": {
-                "type": "integer",
-                "description": "Pixels to scroll for 'scroll' action",
-            },
-            "tab_id": {
-                "type": "integer",
-                "description": "Tab ID for 'switch_tab' action",
+                "description": "URL for the 'navigate' action; can be a web URL or a local file URL (file://...)",
             },
         },
         "required": ["action"],
     }
 
-    # Track current browser state
+    # Track current content
     current_url: Optional[str] = None
     current_html: Optional[str] = None
     current_markdown: Optional[str] = None
-    tabs: Dict[int, Dict[str, str]] = {}
-    active_tab: int = 0
 
     async def fetch_content(self, url: str) -> tuple:
-        """Fetch content from a URL and convert to both HTML and markdown."""
+        """Fetch content from a URL and convert to both HTML and markdown using crawl4ai."""
         from urllib.parse import urlparse
 
         # If URL doesn't have a scheme, add http://
         if not urlparse(url).scheme:
             url = "http://" + url
 
-        html_content = None
-        markdown_content = None
+        # Handle local file URLs
+        if url.startswith("file://"):
+            file_path = url[7:]
+            try:
+                if os.path.exists(file_path):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+                    logger.info(f"Successfully read local file: {file_path}")
+                    return html_content, f"# Content from local file: {file_path}\n\n{html_content}"
+                else:
+                    return f"<html><body><p>Error: File not found at {file_path}</p></body></html>", f"# Error\n\nFile not found at {file_path}"
+            except Exception as e:
+                return f"<html><body><p>Error: {str(e)}</p></body></html>", f"# Error\n\nCould not read file: {str(e)}"
 
-        try:
-            # First try to use crawl4ai if available
-            if CRAWL4AI_AVAILABLE:
-                try:
-                    logger.info(f"Using crawl4ai to fetch and convert content from {url}")
-                    # Use crawl4ai to fetch the content and convert to markdown
-                    # Note: The exact API call depends on the crawl4ai library implementation
-                    crawler = crawl4ai.Crawler()
-                    markdown_content = await crawler.get_markdown(url)
+        # Process web URLs
+        if CRAWL4AI_AVAILABLE:
+            try:
+                logger.info(f"Using crawl4ai to fetch and convert content from {url}")
+
+                # Import proper classes from crawl4ai
+                from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+                from crawl4ai.content_filter_strategy import PruningContentFilter
+                from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+
+                # Configure browser and crawler
+                browser_config = BrowserConfig(
+                    headless=True,
+                    verbose=False,
+                )
+
+                run_config = CrawlerRunConfig(
+                    cache_mode=CacheMode.ENABLED,
+                    markdown_generator=DefaultMarkdownGenerator(
+                        content_filter=PruningContentFilter(threshold=0.48, threshold_type="fixed",
+                                                            min_word_threshold=0)
+                    ),
+                )
+
+                # Create crawler and fetch content
+                async with AsyncWebCrawler(config=browser_config) as crawler:
+                    result = await crawler.arun(
+                        url=url,
+                        config=run_config
+                    )
+
+                    # Extract markdown from result
+                    markdown_content = result.markdown.fit_markdown
+
+                    # Create simple HTML representation
                     html_content = f"<html><body><pre>{markdown_content}</pre></body></html>"
+
                     logger.info(f"Successfully fetched markdown from {url} ({len(markdown_content)} bytes)")
-                except Exception as e:
-                    logger.warning(f"Error using crawl4ai for {url}: {str(e)}")
-                    # Fall back to regular HTML fetching
-                    markdown_content = None
+                    return html_content, markdown_content
 
-            # If markdown is still None, fall back to regular HTML fetching
-            if markdown_content is None:
-                # Fetch HTML content with aiohttp
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=10) as response:
-                        if response.status == 200:
-                            html_content = await response.text()
-                            logger.info(f"Successfully fetched HTML from {url} ({len(html_content)} bytes)")
-
-                            # Convert HTML to a basic markdown representation if crawl4ai not available
-                            markdown_content = f"# Content from {url}\n\n"
-                            markdown_content += "HTML content was retrieved but could not be converted to proper markdown.\n"
-                            markdown_content += "Install crawl4ai library for better markdown conversion."
-                        else:
-                            logger.warning(f"Failed to fetch HTML from {url}, status: {response.status}")
-                            html_content = f"<html><body><p>Error: HTTP {response.status}</p></body></html>"
-                            markdown_content = f"# Error\n\nFailed to fetch content from {url}, status: {response.status}"
-        except Exception as e:
-            logger.error(f"Error fetching content from {url}: {str(e)}")
-            html_content = f"<html><body><p>Error fetching content: {str(e)}</p></body></html>"
-            markdown_content = f"# Error\n\nError fetching content from {url}: {str(e)}"
-
-        return html_content, markdown_content
-
-    async def navigate_to(self, url: str) -> str:
-        """Navigate to a URL and fetch its content."""
-        self.current_url = url
-        self.current_html, self.current_markdown = await self.fetch_content(url)
-
-        # Store in current tab
-        self.tabs[self.active_tab] = {
-            "url": url,
-            "html": self.current_html,
-            "markdown": self.current_markdown
-        }
-
-        return f"Navigated to {url}"
+            except Exception as e:
+                logger.warning(f"Error using crawl4ai for {url}: {str(e)}")
+                error_msg = f"# Error using crawl4ai\n\nFailed to fetch and convert content from {url}: {str(e)}"
+                return f"<html><body><p>{error_msg}</p></body></html>", error_msg
+        else:
+            error_msg = f"# Error: crawl4ai not available\n\nPlease install the crawl4ai library to enable web content fetching and extraction.\n\nUse: pip install crawl4ai"
+            logger.error("crawl4ai library is not available")
+            return f"<html><body><p>{error_msg}</p></body></html>", error_msg
 
     async def execute(self, action: str, **kwargs) -> Any:
-        """Simulate browser actions, fetching real content when possible."""
+        """Execute the requested action."""
         try:
             if action == "navigate":
                 url = kwargs.get('url')
                 if not url:
                     return ToolResult(error="URL parameter is required for navigate action")
 
-                result = await self.navigate_to(url)
-                return ToolResult(output=result)
+                # Fetch content from the URL
+                self.current_url = url
+                self.current_html, self.current_markdown = await self.fetch_content(url)
+                return ToolResult(output=f"Successfully fetched content from {url}")
 
             elif action == "get_html":
-                # Return markdown content if available, otherwise fall back to HTML
-                if self.current_markdown:
-                    content = self.current_markdown
-                    if len(content) > 15000:
-                        content = content[:15000] + "\n... [content truncated due to length] ..."
-                    return ToolResult(output=content)
-                elif self.current_html:
-                    html = self.current_html
-                    if len(html) > 15000:
-                        html = html[:15000] + "\n... [content truncated due to length] ..."
-                    return ToolResult(output=html)
-                else:
-                    return ToolResult(
-                        output="No page has been loaded yet. Use 'navigate' first.")
+                # Return markdown content if available
+                if not self.current_markdown:
+                    return ToolResult(output="No content has been loaded yet. Use 'navigate' with a URL first.")
 
-            elif action == "refresh":
-                if self.current_url:
-                    result = await self.navigate_to(self.current_url)
-                    return ToolResult(output=f"Page refreshed: {result}")
-                else:
-                    return ToolResult(output="No page to refresh. Navigate to a URL first.")
+                content = self.current_markdown
+                if len(content) > 15000:
+                    content = content[:15000] + "\n... [content truncated due to length] ..."
+                return ToolResult(output=content)
 
-            elif action == "new_tab":
-                url = kwargs.get('url')
-                if not url:
-                    return ToolResult(error="URL parameter is required for new_tab action")
-
-                new_tab_id = max(self.tabs.keys() or [-1]) + 1
-                self.active_tab = new_tab_id
-                result = await self.navigate_to(url)
-                return ToolResult(output=f"Opened new tab (ID: {new_tab_id}) and {result}")
-
-            elif action == "switch_tab":
-                tab_id = kwargs.get('tab_id')
-                if tab_id is None:
-                    return ToolResult(error="tab_id parameter is required for switch_tab action")
-
-                if tab_id not in self.tabs:
-                    return ToolResult(error=f"Tab with ID {tab_id} does not exist")
-
-                self.active_tab = tab_id
-                self.current_url = self.tabs[tab_id].get("url")
-                self.current_html = self.tabs[tab_id].get("html")
-                self.current_markdown = self.tabs[tab_id].get("markdown")
-                return ToolResult(output=f"Switched to tab {tab_id} ({self.current_url})")
-
-            elif action == "close_tab":
-                if not self.tabs:
-                    return ToolResult(output="No tabs to close")
-
-                if self.active_tab in self.tabs:
-                    del self.tabs[self.active_tab]
-
-                if self.tabs:
-                    # Switch to another tab
-                    self.active_tab = next(iter(self.tabs.keys()))
-                    self.current_url = self.tabs[self.active_tab].get("url")
-                    self.current_html = self.tabs[self.active_tab].get("html")
-                    self.current_markdown = self.tabs[self.active_tab].get("markdown")
-                    return ToolResult(output=f"Closed tab and switched to tab {self.active_tab}")
-                else:
-                    self.current_url = None
-                    self.current_html = None
-                    self.current_markdown = None
-                    return ToolResult(output="Closed the last tab")
-
-            # Handle other actions with mock responses
-            actions = {
-                "click": f"[MOCK] Clicked element at index {kwargs.get('index', 'unknown')}",
-                "input_text": f"[MOCK] Input text '{kwargs.get('text', '')}' at index {kwargs.get('index', 'unknown')}",
-                "screenshot": "[MOCK] Screenshot captured (simulated in server environment)",
-                "execute_js": f"[MOCK] Executed JavaScript: {kwargs.get('script', 'unknown script')}",
-                "scroll": f"[MOCK] Scrolled {kwargs.get('scroll_amount', 0)} pixels",
-            }
-
-            result = actions.get(action, f"[MOCK] Unknown browser action: {action}")
-            logger.info(f"MockBrowserTool executing: {action}, result summary: {result[:50]}...")
-
-            return ToolResult(output=result)
+            else:
+                return ToolResult(
+                    error=f"Unsupported action: {action}. This tool only supports 'navigate' and 'get_html' actions.")
 
         except Exception as e:
-            logger.error(f"Error in MockBrowserTool.execute({action}): {str(e)}")
-            return ToolResult(error=f"Browser action failed: {str(e)}")
+            logger.error(f"Error in WebContentTool.execute({action}): {str(e)}")
+            return ToolResult(error=f"Web content action failed: {str(e)}")
+
+
+class EnhancedFileSaver(FileSaver):
+    # Properly declare file_tracker as a field with proper typing
+    file_tracker: Optional[Any] = Field(default=None, description="Tracker for generated files")
+
+    async def execute(self, content: str, file_path: str, mode: str = "w") -> str:
+        """Save content to a file and track it for download."""
+        result = await super().execute(content, file_path, mode)
+
+        # If file was saved successfully and we have a tracker
+        if "successfully saved" in result and self.file_tracker:
+            # Generate a unique ID for this file
+            file_id = str(uuid.uuid4())
+            file_name = os.path.basename(file_path)
+
+            # Determine file size
+            file_size = 0
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+
+            # Guess content type
+            content_type = self._guess_content_type(file_path)
+
+            # Create file info and add to tracker
+            file_info = FileInfo(
+                file_id=file_id,
+                file_path=file_path,
+                file_name=file_name,
+                content_type=content_type,
+                description=f"File created during agent interaction",
+                size=file_size
+            )
+
+            self.file_tracker.add_file(file_info)
+
+            # Update the result message to include download info
+            result = f"{result} (File ID: {file_id}, available for download)"
+
+        return result
+
+    # Add or modify these functions in enhanced_server.py to improve file downloads
+
+    @app.get("/api/files/{file_id}")
+    async def download_file(file_id: str, request: Request):
+        """Endpoint to download files generated by the agent."""
+        file_info = manager.file_tracker.get_file_info(file_id)
+
+        if not file_info:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Check if file exists
+        if not os.path.exists(file_info.file_path):
+            raise HTTPException(status_code=404, detail="File not found on server")
+
+        # Set proper Content-Disposition header to force download
+        headers = {
+            "Content-Disposition": f'attachment; filename="{file_info.file_name}"'
+        }
+
+        return FileResponse(
+            file_info.file_path,
+            media_type=file_info.content_type,
+            filename=file_info.file_name,
+            headers=headers
+        )
+
+    # Also ensure the EnhancedFileSaver._guess_content_type method covers Python files
+    def _guess_content_type(self, file_path: str) -> str:
+        """Guess the content type based on file extension."""
+        import mimetypes
+        # Ensure common file types are registered
+        mimetypes.add_type('text/x-python', '.py')
+        mimetypes.add_type('text/javascript', '.js')
+        mimetypes.add_type('text/css', '.css')
+        mimetypes.add_type('text/html', '.html')
+        mimetypes.add_type('text/markdown', '.md')
+
+        content_type, _ = mimetypes.guess_type(file_path)
+        return content_type or "application/octet-stream"
 
 
 class EnhancedManus(Manus):
     client_id: Optional[str] = Field(default=None)
     update_callback: Optional[Callable] = Field(default=None)
+    file_tracker: Any = Field(default=None)  # Explicitly declare as a field
 
-    # Override the available_tools to exclude the real BrowserUseTool and add our MockBrowserTool
-    available_tools: ToolCollection = Field(
-        default_factory=lambda: ToolCollection(
-            PythonExecute(),
-            GoogleSearch(),
-            FileSaver(),
-            Bash(),
-            PlanningTool(),
-            StrReplaceEditor(),
-            MockBrowserTool(),  # Use our enhanced mock browser tool
-            Terminate()
-        )
-    )
+    # Override the available_tools to use enhanced versions
+    available_tools: ToolCollection = Field(default_factory=lambda: None)  # Will be set in __init__
+
+    def __init__(self, **data):
+        # Call the parent class's __init__ first
+        super().__init__(**data)
+
+        # Initialize tools collection with the enhanced FileSaver
+        if self.file_tracker is not None:
+            # Create the enhanced file saver with the file_tracker
+            enhanced_file_saver = EnhancedFileSaver(file_tracker=self.file_tracker)
+
+            # Create a fresh tool collection with our enhanced tools
+            self.available_tools = ToolCollection(
+                PythonExecute(),
+                GoogleSearch(),
+                enhanced_file_saver,  # Use the enhanced version
+                Bash(),
+                PlanningTool(),
+                StrReplaceEditor(),
+                WebContentTool(),  # Use the simplified web content tool
+                Terminate()
+            )
 
     async def run(self, request: Optional[str] = None) -> str:
         if self.update_callback:
@@ -327,6 +370,26 @@ class EnhancedManus(Manus):
                 {"status": "tool", "message": f"Using tool: {command.function.name}"}
             )
         result = await super().execute_tool(command)
+
+        # Check if the result indicates a file creation (from FileSaver)
+        if command.function.name == "file_saver" and self.file_tracker and "File ID:" in result:
+            # Extract file ID from result
+            import re
+            file_id_match = re.search(r"File ID: ([a-f0-9-]+)", result)
+            if file_id_match:
+                file_id = file_id_match.group(1)
+                # Inform the client about the new file
+                if self.update_callback:
+                    file_info = self.file_tracker.get_file_info(file_id)
+                    if file_info:
+                        await self.update_callback(
+                            self.client_id,
+                            {
+                                "status": "file_created",
+                                "file": file_info.to_dict()
+                            }
+                        )
+
         if self.update_callback:
             result_summary = str(result)[:100] + "..." if len(str(result)) > 100 else str(result)
             await self.update_callback(
@@ -336,20 +399,59 @@ class EnhancedManus(Manus):
         return result
 
 
+class FileTracker:
+    def __init__(self):
+        self.files: Dict[str, FileInfo] = {}
+        self.client_files: Dict[str, Set[str]] = {}  # Maps client_id to set of file_ids
+
+    def add_file(self, file_info: FileInfo, client_id: Optional[str] = None):
+        """Add a file to the tracker."""
+        self.files[file_info.file_id] = file_info
+
+        # Associate file with client if provided
+        if client_id:
+            if client_id not in self.client_files:
+                self.client_files[client_id] = set()
+            self.client_files[client_id].add(file_info.file_id)
+
+    def get_file_info(self, file_id: str) -> Optional[FileInfo]:
+        """Get information about a file."""
+        return self.files.get(file_id)
+
+    def get_client_files(self, client_id: str) -> List[FileInfo]:
+        """Get all files associated with a client."""
+        if client_id not in self.client_files:
+            return []
+
+        return [self.files[file_id] for file_id in self.client_files[client_id]
+                if file_id in self.files]
+
+    def remove_file(self, file_id: str):
+        """Remove a file from the tracker."""
+        if file_id in self.files:
+            del self.files[file_id]
+
+            # Remove from client associations
+            for client_id in self.client_files:
+                self.client_files[client_id].discard(file_id)
+
+
 # Connection manager to handle multiple clients
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.agent_instances: Dict[str, EnhancedManus] = {}
+        self.file_tracker = FileTracker()
 
     async def connect(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
         self.active_connections[client_id] = websocket
 
-        # Create agent instance with the modified tools
+        # Create agent instance with the modified tools and file tracker
         self.agent_instances[client_id] = EnhancedManus(
             client_id=client_id,
-            update_callback=self.send_message
+            update_callback=self.send_message,
+            file_tracker=self.file_tracker
         )
         logger.info(f"Client {client_id} connected")
 
@@ -392,13 +494,18 @@ class ConnectionManager:
             # Get new messages generated during processing
             new_messages = agent.memory.messages[len(original_messages):]
 
+            # Get files created during processing
+            client_files = self.file_tracker.get_client_files(client_id)
+            file_data = [file_info.to_dict() for file_info in client_files]
+
             # Send the full result to the client
             await self.send_message(
                 client_id,
                 {
                     "status": "complete",
                     "result": result,
-                    "messages": [msg.to_dict() for msg in new_messages]
+                    "messages": [msg.to_dict() for msg in new_messages],
+                    "files": file_data
                 }
             )
 
@@ -446,21 +553,42 @@ async def handle_request(request_data: RequestModel):
     client_id = f"http_{id(request_data)}"
 
     # Create a temporary agent instance
-    agent = EnhancedManus()
+    agent = EnhancedManus(
+        client_id=client_id,
+        file_tracker=manager.file_tracker
+    )
 
     try:
         # Process request
         result = await agent.run(request_data.request)
 
+        # Get files created during processing
+        client_files = manager.file_tracker.get_client_files(client_id)
+        file_data = [file_info.to_dict() for file_info in client_files]
+
         # Return result
         return {
             "status": "complete",
             "result": result,
-            "messages": [msg.to_dict() for msg in agent.memory.messages]
+            "messages": [msg.to_dict() for msg in agent.memory.messages],
+            "files": file_data
         }
     except Exception as e:
         logger.error(f"Error processing HTTP request: {e}")
         return {"status": "error", "error": str(e)}
+
+
+
+
+@app.get("/api/files")
+async def list_files(client_id: Optional[str] = None):
+    """List available files for a client."""
+    if client_id:
+        files = manager.file_tracker.get_client_files(client_id)
+        return {"files": [file_info.to_dict() for file_info in files]}
+    else:
+        # Return all files if no client_id specified
+        return {"files": [file_info.to_dict() for file_info in manager.file_tracker.files.values()]}
 
 
 # Serve static client HTML file if available
