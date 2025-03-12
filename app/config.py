@@ -1,7 +1,7 @@
 import threading
 import tomllib
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -25,8 +25,42 @@ class LLMSettings(BaseModel):
     api_version: str = Field(..., description="Azure Openai version if AzureOpenai")
 
 
+class ProxySettings(BaseModel):
+    server: str = Field(None, description="Proxy server address")
+    username: Optional[str] = Field(None, description="Proxy username")
+    password: Optional[str] = Field(None, description="Proxy password")
+
+
+class BrowserSettings(BaseModel):
+    headless: bool = Field(False, description="Whether to run browser in headless mode")
+    disable_security: bool = Field(
+        True, description="Disable browser security features"
+    )
+    extra_chromium_args: List[str] = Field(
+        default_factory=list, description="Extra arguments to pass to the browser"
+    )
+    chrome_instance_path: Optional[str] = Field(
+        None, description="Path to a Chrome instance to use"
+    )
+    wss_url: Optional[str] = Field(
+        None, description="Connect to a browser instance via WebSocket"
+    )
+    cdp_url: Optional[str] = Field(
+        None, description="Connect to a browser instance via CDP"
+    )
+    proxy: Optional[ProxySettings] = Field(
+        None, description="Proxy settings for the browser"
+    )
+
+
 class AppConfig(BaseModel):
     llm: Dict[str, LLMSettings]
+    browser_config: Optional[BrowserSettings] = Field(
+        None, description="Browser configuration"
+    )
+
+    class Config:
+        arbitrary_types_allowed = True
 
 
 class Config:
@@ -82,6 +116,39 @@ class Config:
             "api_version": base_llm.get("api_version", ""),
         }
 
+        # handle browser config.
+        browser_config = raw_config.get("browser", {})
+        browser_settings = None
+
+        if browser_config:
+            # handle proxy settings.
+            proxy_config = browser_config.get("proxy", {})
+            proxy_settings = None
+
+            if proxy_config and proxy_config.get("server"):
+                proxy_settings = ProxySettings(
+                    **{
+                        k: v
+                        for k, v in proxy_config.items()
+                        if k in ["server", "username", "password"] and v
+                    }
+                )
+
+            # filter valid browser config parameters.
+            valid_browser_params = {
+                k: v
+                for k, v in browser_config.items()
+                if k in BrowserSettings.__annotations__ and v is not None
+            }
+
+            # if there is proxy settings, add it to the parameters.
+            if proxy_settings:
+                valid_browser_params["proxy"] = proxy_settings
+
+            # only create BrowserSettings when there are valid parameters.
+            if valid_browser_params:
+                browser_settings = BrowserSettings(**valid_browser_params)
+
         config_dict = {
             "llm": {
                 "default": default_settings,
@@ -89,7 +156,8 @@ class Config:
                     name: {**default_settings, **override_config}
                     for name, override_config in llm_overrides.items()
                 },
-            }
+            },
+            "browser_config": browser_settings,
         }
 
         self._config = AppConfig(**config_dict)
@@ -97,6 +165,10 @@ class Config:
     @property
     def llm(self) -> Dict[str, LLMSettings]:
         return self._config.llm
+
+    @property
+    def browser_config(self) -> Optional[BrowserSettings]:
+        return self._config.browser_config
 
 
 config = Config()

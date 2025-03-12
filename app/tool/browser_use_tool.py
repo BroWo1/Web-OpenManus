@@ -4,13 +4,16 @@ from typing import Optional
 
 from browser_use import Browser as BrowserUseBrowser
 from browser_use import BrowserConfig
-from browser_use.browser.context import BrowserContext
+from browser_use.browser.context import BrowserContext, BrowserContextConfig
 from browser_use.dom.service import DomService
 from pydantic import Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
 
+from app.config import config
 from app.tool.base import BaseTool, ToolResult
 
+
+MAX_LENGTH = 2000
 
 _BROWSER_DESCRIPTION = """
 Interact with a web browser to perform various actions such as navigation, element interaction,
@@ -103,10 +106,50 @@ class BrowserUseTool(BaseTool):
     async def _ensure_browser_initialized(self) -> BrowserContext:
         """Ensure browser and context are initialized."""
         if self.browser is None:
-            self.browser = BrowserUseBrowser(BrowserConfig(headless=False))
+            browser_config_kwargs = {"headless": False}
+
+            if config.browser_config:
+                from browser_use.browser.browser import ProxySettings
+
+                # handle proxy settings.
+                if config.browser_config.proxy and config.browser_config.proxy.server:
+                    browser_config_kwargs["proxy"] = ProxySettings(
+                        server=config.browser_config.proxy.server,
+                        username=config.browser_config.proxy.username,
+                        password=config.browser_config.proxy.password,
+                    )
+
+                browser_attrs = [
+                    "headless",
+                    "disable_security",
+                    "extra_chromium_args",
+                    "chrome_instance_path",
+                    "wss_url",
+                    "cdp_url",
+                ]
+
+                for attr in browser_attrs:
+                    value = getattr(config.browser_config, attr, None)
+                    if value is not None:
+                        if not isinstance(value, list) or value:
+                            browser_config_kwargs[attr] = value
+
+            self.browser = BrowserUseBrowser(BrowserConfig(**browser_config_kwargs))
+
         if self.context is None:
-            self.context = await self.browser.new_context()
+            context_config = BrowserContextConfig()
+
+            # if there is context config in the config, use it.
+            if (
+                config.browser_config
+                and hasattr(config.browser_config, "new_context_config")
+                and config.browser_config.new_context_config
+            ):
+                context_config = config.browser_config.new_context_config
+
+            self.context = await self.browser.new_context(context_config)
             self.dom_service = DomService(await self.context.get_current_page())
+
         return self.context
 
     async def execute(
@@ -180,7 +223,9 @@ class BrowserUseTool(BaseTool):
 
                 elif action == "get_html":
                     html = await context.get_page_html()
-                    truncated = html[:2000] + "..." if len(html) > 2000 else html
+                    truncated = (
+                        html[:MAX_LENGTH] + "..." if len(html) > MAX_LENGTH else html
+                    )
                     return ToolResult(output=truncated)
 
                 elif action == "get_text":

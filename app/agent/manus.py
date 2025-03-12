@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import Field
 
 from app.agent.toolcall import ToolCallAgent
@@ -26,9 +28,16 @@ class Manus(ToolCallAgent):
     system_prompt: str = SYSTEM_PROMPT
     next_step_prompt: str = NEXT_STEP_PROMPT
 
+    max_observe: int = 2000
+    max_steps: int = 20
+
     # Add general-purpose tools to the tool collection
     available_tools: ToolCollection = Field(
         default_factory=lambda: ToolCollection(
             PythonExecute(), GoogleSearch(), BrowserUseTool(), FileSaver(), Terminate()
         )
     )
+
+    async def _handle_special_tool(self, name: str, result: Any, **kwargs):
+        await self.available_tools.get_tool(BrowserUseTool().name).cleanup()
+        await super()._handle_special_tool(name, result, **kwargs)

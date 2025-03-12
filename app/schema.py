@@ -3,6 +3,24 @@ from typing import Any, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
+class Role(str, Enum):
+    """Message role options"""
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant" 
+    TOOL = "tool"
+
+ROLE_VALUES = tuple(role.value for role in Role)
+ROLE_TYPE = Literal[ROLE_VALUES]  # type: ignore
+
+class ToolChoice(str, Enum):
+    """Tool choice options"""
+    NONE = "none"
+    AUTO = "auto"
+    REQUIRED = "required"
+
+TOOL_CHOICE_VALUES = tuple(choice.value for choice in ToolChoice)
+TOOL_CHOICE_TYPE = Literal[TOOL_CHOICE_VALUES]  # type: ignore
 
 class AgentState(str, Enum):
     """Agent execution states"""
@@ -29,7 +47,7 @@ class ToolCall(BaseModel):
 class Message(BaseModel):
     """Represents a chat message in the conversation"""
 
-    role: Literal["system", "user", "assistant", "tool"] = Field(...)
+    role: ROLE_TYPE = Field(...) # type: ignore
     content: Optional[str] = Field(default=None)
     tool_calls: Optional[List[ToolCall]] = Field(default=None)
     name: Optional[str] = Field(default=None)
@@ -71,22 +89,22 @@ class Message(BaseModel):
     @classmethod
     def user_message(cls, content: str) -> "Message":
         """Create a user message"""
-        return cls(role="user", content=content)
+        return cls(role=Role.USER, content=content)
 
     @classmethod
     def system_message(cls, content: str) -> "Message":
         """Create a system message"""
-        return cls(role="system", content=content)
+        return cls(role=Role.SYSTEM, content=content)
 
     @classmethod
     def assistant_message(cls, content: Optional[str] = None) -> "Message":
         """Create an assistant message"""
-        return cls(role="assistant", content=content)
+        return cls(role=Role.ASSISTANT, content=content)
 
     @classmethod
     def tool_message(cls, content: str, name, tool_call_id: str) -> "Message":
         """Create a tool message"""
-        return cls(role="tool", content=content, name=name, tool_call_id=tool_call_id)
+        return cls(role=Role.TOOL, content=content, name=name, tool_call_id=tool_call_id)
 
     @classmethod
     def from_tool_calls(
@@ -103,7 +121,7 @@ class Message(BaseModel):
             for call in tool_calls
         ]
         return cls(
-            role="assistant", content=content, tool_calls=formatted_calls, **kwargs
+            role=Role.ASSISTANT, content=content, tool_calls=formatted_calls, **kwargs
         )
 
 
