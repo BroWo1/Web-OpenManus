@@ -1,10 +1,12 @@
 # enhanced_server.py
+
 import asyncio
 import json
 import logging
 import os
 import uuid
 from typing import Dict, List, Optional, Callable, Any, Set
+from app.agent.base import BaseAgent, AgentState
 
 
 # Add aiohttp for HTML fetching in the MockBrowserTool
@@ -41,6 +43,8 @@ from app.agent.base import BaseAgent
 from app.agent.toolcall import ToolCallAgent
 import asyncio
 import sys
+from typing import Dict, Optional, Callable, Set
+
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -310,10 +314,14 @@ class EnhancedFileSaver(FileSaver):
         return content_type or "application/octet-stream"
 
 
+# Update the EnhancedManus class with cancellation support
+
 class EnhancedManus(Manus):
     client_id: Optional[str] = Field(default=None)
     update_callback: Optional[Callable] = Field(default=None)
-    file_tracker: Any = Field(default=None)  # Explicitly declare as a field
+    file_tracker: Any = Field(default=None)
+    # Add a flag to track cancellation
+    cancel_requested: bool = Field(default=False)
 
     # Override the available_tools to use enhanced versions
     available_tools: ToolCollection = Field(default_factory=lambda: None)  # Will be set in __init__
@@ -340,6 +348,10 @@ class EnhancedManus(Manus):
             )
 
     async def run(self, request: Optional[str] = None) -> str:
+        """Run the agent with cancellation support."""
+        # Reset cancel flag at the start of processing
+        self.cancel_requested = False
+
         if self.update_callback:
             await self.update_callback(
                 self.client_id,
@@ -348,6 +360,19 @@ class EnhancedManus(Manus):
         return await super().run(request)
 
     async def step(self) -> str:
+        """Execute a single step with cancellation check."""
+        # Check if cancellation was requested
+        if self.cancel_requested:
+            logger.info(f"Cancellation requested for client {self.client_id}, stopping processing")
+            self.state = AgentState.FINISHED  # Set state to finished to stop processing
+            if self.update_callback:
+                await self.update_callback(
+                    self.client_id,
+                    {"status": "cancelled", "message": "Processing cancelled by user"}
+                )
+            return "Processing cancelled by user"
+
+        # Send step update if callback is available
         if self.update_callback:
             await self.update_callback(
                 self.client_id,
@@ -356,6 +381,11 @@ class EnhancedManus(Manus):
         return await super().step()
 
     async def think(self) -> bool:
+        """Thinking phase with cancellation check and progress updates."""
+        # Check for cancellation first
+        if self.cancel_requested:
+            return False
+
         if self.update_callback:
             await self.update_callback(
                 self.client_id,
@@ -364,6 +394,11 @@ class EnhancedManus(Manus):
         return await super().think()
 
     async def execute_tool(self, command) -> str:
+        """Execute a tool with cancellation check and progress updates."""
+        # Check for cancellation first
+        if self.cancel_requested:
+            return "Tool execution cancelled"
+
         if self.update_callback:
             await self.update_callback(
                 self.client_id,
@@ -436,14 +471,19 @@ class FileTracker:
                 self.client_files[client_id].discard(file_id)
 
 
-# Connection manager to handle multiple clients
+# Replace the ConnectionManager class in enhanced_server.py with this implementation
+# Make sure to replace the entire class, not just add methods
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.agent_instances: Dict[str, EnhancedManus] = {}
         self.file_tracker = FileTracker()
+        # Add a dictionary to track processing tasks
+        self.processing_tasks: Dict[str, asyncio.Task] = {}
 
     async def connect(self, websocket: WebSocket, client_id: str):
+        """Accept the connection and initialize agent instance."""
         await websocket.accept()
         self.active_connections[client_id] = websocket
 
@@ -456,24 +496,83 @@ class ConnectionManager:
         logger.info(f"Client {client_id} connected")
 
     def disconnect(self, client_id: str):
+        """Handle client disconnection and cleanup resources."""
         if client_id in self.active_connections:
             del self.active_connections[client_id]
         if client_id in self.agent_instances:
             del self.agent_instances[client_id]
+        # Also clean up any processing tasks
+        if client_id in self.processing_tasks:
+            task = self.processing_tasks[client_id]
+            if not task.done():
+                task.cancel()
+            del self.processing_tasks[client_id]
         logger.info(f"Client {client_id} disconnected")
 
     async def send_message(self, client_id: str, message):
+        """Send a message to a specific client."""
         if client_id in self.active_connections:
             if isinstance(message, str):
                 await self.active_connections[client_id].send_text(message)
             else:
                 await self.active_connections[client_id].send_text(json.dumps(message))
 
+    async def cancel_processing(self, client_id: str):
+        """Cancel the current processing task for a client."""
+        if client_id in self.processing_tasks:
+            task = self.processing_tasks[client_id]
+            if not task.done():
+                # Set the cancel flag on the agent
+                if client_id in self.agent_instances:
+                    self.agent_instances[client_id].cancel_requested = True
+
+                # Send cancellation status message
+                await self.send_message(
+                    client_id,
+                    {"status": "cancelling", "message": "Cancellation requested. Stopping processing..."}
+                )
+
+                # Wait for task to acknowledge cancellation
+                try:
+                    # Give it a short timeout to react to cancellation
+                    await asyncio.wait_for(asyncio.shield(task), 2.0)
+                except asyncio.TimeoutError:
+                    # If it doesn't respond in time, forcibly cancel
+                    task.cancel()
+                    await self.send_message(
+                        client_id,
+                        {"status": "cancelled", "message": "Processing was forcibly cancelled"}
+                    )
+
+                return True
+
+        return False
+
     async def process_request(self, request: str, client_id: str):
+        """Process a client request by creating and tracking a task."""
         if client_id not in self.agent_instances:
             await self.send_message(client_id, {"status": "error", "error": "No agent instance found"})
             return
 
+        # Create and store the processing task
+        task = asyncio.create_task(self._process_request_impl(request, client_id))
+        self.processing_tasks[client_id] = task
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.info(f"Request processing for client {client_id} was cancelled")
+            await self.send_message(
+                client_id,
+                {"status": "cancelled", "message": "Processing cancelled by user"}
+            )
+        finally:
+            # Clean up task reference
+            if client_id in self.processing_tasks:
+                del self.processing_tasks[client_id]
+
+    async def _process_request_impl(self, request: str, client_id: str):
+        """Implementation of request processing."""
         agent = self.agent_instances[client_id]
 
         # Store original messages to track new ones
@@ -490,6 +589,14 @@ class ConnectionManager:
 
             # Process request with the agent
             result = await agent.run(request)
+
+            # If we get here and cancellation was requested, still treat as cancelled
+            if agent.cancel_requested:
+                await self.send_message(
+                    client_id,
+                    {"status": "cancelled", "message": "Processing was cancelled successfully"}
+                )
+                return
 
             # Get new messages generated during processing
             new_messages = agent.memory.messages[len(original_messages):]
@@ -521,6 +628,8 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# Update the WebSocket endpoint function to handle cancel commands
+
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await manager.connect(websocket, client_id)
@@ -529,11 +638,20 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             data = await websocket.receive_text()
             try:
                 request_data = json.loads(data)
+
+                # Handle different message types
                 if "request" in request_data:
                     # Process request in background task
                     asyncio.create_task(
                         manager.process_request(request_data["request"], client_id)
                     )
+                elif "command" in request_data and request_data["command"] == "cancel":
+                    # Handle cancellation command
+                    logger.info(f"Received cancellation request from client {client_id}")
+                    await manager.cancel_processing(client_id)
+                else:
+                    logger.warning(f"Unknown message format from client {client_id}: {request_data}")
+
             except json.JSONDecodeError:
                 await manager.send_message(
                     client_id,
