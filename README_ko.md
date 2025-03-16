@@ -1,5 +1,8 @@
-[English](README.md) | [中文](README_zh.md) | 한국어
+<p align="center">
+  <img src="assets/logo.jpg" width="200"/>
+</p>
 
+[English](README.md) | [中文](README_zh.md) | 한국어 | [日本語](README_ja.md)
 
 [![GitHub stars](https://img.shields.io/github/stars/mannaandpoem/OpenManus?style=social)](https://github.com/mannaandpoem/OpenManus/stargazers)
 &ensp;
@@ -66,7 +69,7 @@ cd OpenManus
 3. 새로운 가상 환경을 생성하고 활성화합니다:
 
 ```bash
-uv venv
+uv venv --python 3.12
 source .venv/bin/activate  # Unix/macOS의 경우
 # Windows의 경우:
 # .venv\Scripts\activate
@@ -128,6 +131,8 @@ python run_flow.py
 
 또는 📧 메일로 연락주세요. @mannaandpoem : mannaandpoem@gmail.com
 
+**참고**: pull request를 제출하기 전에 pre-commit 도구를 사용하여 변경 사항을 확인하십시오. `pre-commit run --all-files`를 실행하여 검사를 실행합니다.
+
 ## 커뮤니티 그룹
 Feishu 네트워킹 그룹에 참여하여 다른 개발자들과 경험을 공유하세요!
 
@@ -144,7 +149,7 @@ Feishu 네트워킹 그룹에 참여하여 다른 개발자들과 경험을 공�
 이 프로젝트에 기본적인 지원을 제공해 주신 [anthropic-computer-use](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo)와
 [browser-use](https://github.com/browser-use/browser-use)에게 감사드립니다!
 
-또한, [AAAJ](https://github.com/metauto-ai/agent-as-a-judge), [MetaGPT](https://github.com/geekan/MetaGPT), [OpenHands](https://github.com/All-Hands-AI/OpenHands)에 깊은 감사를 드립니다.
+또한, [AAAJ](https://github.com/metauto-ai/agent-as-a-judge), [MetaGPT](https://github.com/geekan/MetaGPT), [OpenHands](https://github.com/All-Hands-AI/OpenHands), [SWE-agent](https://github.com/SWE-agent/SWE-agent)에 깊은 감사를 드립니다.
 
 OpenManus는 MetaGPT 기여자들에 의해 개발되었습니다. 이 에이전트 커뮤니티에 깊은 감사를 전합니다!
 

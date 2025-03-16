@@ -7,8 +7,8 @@ from app.prompt.manus import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.tool import Terminate, ToolCollection
 from app.tool.browser_use_tool import BrowserUseTool
 from app.tool.file_saver import FileSaver
-from app.tool.google_search import GoogleSearch
 from app.tool.python_execute import PythonExecute
+from app.tool.web_search import WebSearch
 
 
 class Manus(ToolCallAgent):
@@ -34,10 +34,13 @@ class Manus(ToolCallAgent):
     # Add general-purpose tools to the tool collection
     available_tools: ToolCollection = Field(
         default_factory=lambda: ToolCollection(
-            PythonExecute(), GoogleSearch(), BrowserUseTool(), FileSaver(), Terminate()
+            PythonExecute(), WebSearch(), BrowserUseTool(), FileSaver(), Terminate()
         )
     )
 
     async def _handle_special_tool(self, name: str, result: Any, **kwargs):
-        await self.available_tools.get_tool(BrowserUseTool().name).cleanup()
-        await super()._handle_special_tool(name, result, **kwargs)
+        if not self._is_special_tool(name):
+            return
+        else:
+            await self.available_tools.get_tool(BrowserUseTool().name).cleanup()
+            await super()._handle_special_tool(name, result, **kwargs)

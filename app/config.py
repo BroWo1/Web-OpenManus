@@ -20,6 +20,10 @@ class LLMSettings(BaseModel):
     base_url: str = Field(..., description="API base URL")
     api_key: str = Field(..., description="API key")
     max_tokens: int = Field(4096, description="Maximum number of tokens per request")
+    max_input_tokens: Optional[int] = Field(
+        None,
+        description="Maximum input tokens to use across all requests (None for unlimited)",
+    )
     temperature: float = Field(1.0, description="Sampling temperature")
     api_type: str = Field(..., description="AzureOpenai or Openai")
     api_version: str = Field(..., description="Azure Openai version if AzureOpenai")
@@ -29,6 +33,10 @@ class ProxySettings(BaseModel):
     server: str = Field(None, description="Proxy server address")
     username: Optional[str] = Field(None, description="Proxy username")
     password: Optional[str] = Field(None, description="Proxy password")
+
+
+class SearchSettings(BaseModel):
+    engine: str = Field(default="Google", description="Search engine the llm to use")
 
 
 class BrowserSettings(BaseModel):
@@ -57,6 +65,9 @@ class AppConfig(BaseModel):
     llm: Dict[str, LLMSettings]
     browser_config: Optional[BrowserSettings] = Field(
         None, description="Browser configuration"
+    )
+    search_config: Optional[SearchSettings] = Field(
+        None, description="Search configuration"
     )
 
     class Config:
@@ -111,6 +122,7 @@ class Config:
             "base_url": base_llm.get("base_url"),
             "api_key": base_llm.get("api_key"),
             "max_tokens": base_llm.get("max_tokens", 4096),
+            "max_input_tokens": base_llm.get("max_input_tokens"),
             "temperature": base_llm.get("temperature", 1.0),
             "api_type": base_llm.get("api_type", ""),
             "api_version": base_llm.get("api_version", ""),
@@ -149,6 +161,11 @@ class Config:
             if valid_browser_params:
                 browser_settings = BrowserSettings(**valid_browser_params)
 
+        search_config = raw_config.get("search", {})
+        search_settings = None
+        if search_config:
+            search_settings = SearchSettings(**search_config)
+
         config_dict = {
             "llm": {
                 "default": default_settings,
@@ -158,6 +175,7 @@ class Config:
                 },
             },
             "browser_config": browser_settings,
+            "search_config": search_settings,
         }
 
         self._config = AppConfig(**config_dict)
@@ -169,6 +187,10 @@ class Config:
     @property
     def browser_config(self) -> Optional[BrowserSettings]:
         return self._config.browser_config
+
+    @property
+    def search_config(self) -> Optional[SearchSettings]:
+        return self._config.search_config
 
 
 config = Config()

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.llm import LLM
 from app.logger import logger
-from app.schema import AgentState, Memory, Message, ROLE_TYPE
+from app.schema import ROLE_TYPE, AgentState, Memory, Message
 
 
 class BaseAgent(BaseModel, ABC):
@@ -82,7 +82,7 @@ class BaseAgent(BaseModel, ABC):
 
     def update_memory(
         self,
-        role: ROLE_TYPE, # type: ignore
+        role: ROLE_TYPE,  # type: ignore
         content: str,
         **kwargs,
     ) -> None:
@@ -144,8 +144,8 @@ class BaseAgent(BaseModel, ABC):
                 results.append(f"Step {self.current_step}: {step_result}")
 
             if self.current_step >= self.max_steps:
-                self.current_step = 0  # setting back to 0 when reached max steps
-                self.state = AgentState.IDLE  # setting the status
+                self.current_step = 0
+                self.state = AgentState.IDLE
                 results.append(f"Terminated: Reached max steps ({self.max_steps})")
 
         return "\n".join(results) if results else "No steps executed"

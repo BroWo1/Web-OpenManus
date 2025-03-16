@@ -1,10 +1,11 @@
 # Global LLM configuration
 [llm]
-model = "claude-3-5-sonnet"
-base_url = "https://api.openai.com/v1"
-api_key = "sk-..."
-max_tokens = 4096
-temperature = 0.0
+model = "gpt-4o"                       # The LLM model to use
+base_url = "https://api.openai.com/v1" # API endpoint URL
+api_key = "sk-..."                     # Your API key
+max_tokens = 8192                      # Maximum number of tokens in the response
+temperature = 0.0                      # Controls randomness
+# max_input_tokens = 100000            # Maximum input tokens to use across all requests (set to null or delete this line for unlimited)
 
 # [llm] #AZURE OPENAI:
 # api_type= 'azure'
@@ -15,11 +16,29 @@ temperature = 0.0
 # temperature = 0.0
 # api_version="AZURE API VERSION" #"2024-08-01-preview"
 
+# [llm] #OLLAMA:
+# api_type = 'ollama'
+# model = "llama3.2"
+# base_url = "http://localhost:11434/v1"
+# api_key = "ollama"
+# max_tokens = 4096
+# temperature = 0.0
+
 # Optional configuration for specific LLM models
 [llm.vision]
-model = "claude-3-5-sonnet"
-base_url = "https://api.openai.com/v1"
-api_key = "sk-..."
+model = "gpt-4o"                       # The vision model to use
+base_url = "https://api.openai.com/v1" # API endpoint URL for vision model
+api_key = "sk-..."                     # Your API key for vision model
+max_tokens = 8192                      # Maximum number of tokens in the response
+temperature = 0.0                      # Controls randomness for vision model
+
+# [llm.vision] #OLLAMA VISION:
+# api_type = 'ollama'
+# model = "llama3.2-vision"
+# base_url = "http://localhost:11434/v1"
+# api_key = "ollama"
+# max_tokens = 4096
+# temperature = 0.0
 
 # Optional configuration for specific browser configuration
 # [browser]
@@ -42,3 +61,8 @@ api_key = "sk-..."
 # server = "http://proxy-server:port"
 # username = "proxy-username"
 # password = "proxy-password"
+
+# Optional configuration, Search settings.
+# [search]
+# Search engine for agent to use. Default is "Google", can be set to "Baidu" or "DuckDuckGo".
+#engine = "Google"
