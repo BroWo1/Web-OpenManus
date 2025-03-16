@@ -8,7 +8,6 @@ import uuid
 from typing import Dict, List, Optional, Callable, Any, Set
 from app.agent.base import BaseAgent, AgentState
 
-
 # Add aiohttp for HTML fetching in the MockBrowserTool
 import aiohttp
 import uvicorn
@@ -31,7 +30,7 @@ except ImportError:
 from app.agent.manus import Manus
 from app.tool.tool_collection import ToolCollection
 from app.tool.python_execute import PythonExecute
-from app.tool.google_search import GoogleSearch
+from app.tool.web_search import WebSearch  # Updated from GoogleSearch to WebSearch
 from app.tool.file_saver import FileSaver
 from app.tool.bash import Bash
 from app.tool.planning import PlanningTool
@@ -45,10 +44,8 @@ import asyncio
 import sys
 from typing import Dict, Optional, Callable, Set
 
-
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 
 # Configure logging for development
 logging.basicConfig(level=logging.INFO)
@@ -64,8 +61,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Import workspace directory from app.config
+from app.config import WORKSPACE_ROOT
+
 # Directory for storing files that will be available for download
-FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_files")
+FILES_DIR = WORKSPACE_ROOT
 os.makedirs(FILES_DIR, exist_ok=True)
 
 
@@ -107,6 +107,7 @@ class FileInfo(BaseModel):
 
 
 # Web content fetch tool that uses crawl4ai for extracting structured content
+# Keeping the original WebContentTool as instructed
 class WebContentTool(BaseTool):
     name: str = "browser_use"  # Keep same name for backward compatibility
     description: str = "Fetch and extract structured content from websites using crawl4ai, or read local files"
@@ -239,27 +240,6 @@ class WebContentTool(BaseTool):
         # This is a no-op method to prevent errors when called
         pass
 
-    # Alternative approach: Modify _handle_special_tool in app/agent/toolcall.py
-    # Find this method in the ToolCallAgent class and replace it with this implementation
-    async def _handle_special_tool(self, name: str, result: Any, **kwargs):
-        """Handle special tool execution and state changes"""
-        if not self._is_special_tool(name):
-            return
-
-        # First try to cleanup browser tools if they exist
-        try:
-            browser_tool = self.available_tools.get_tool("browser_use")
-            if browser_tool and hasattr(browser_tool, "cleanup"):
-                await browser_tool.cleanup()
-        except Exception as e:
-            # Just log the error but don't fail
-            print(f"Warning: Browser cleanup failed: {e}")
-
-        if self._should_finish_execution(name=name, result=result, **kwargs):
-            # Set agent state to finished
-            print(f"🏁 Special tool '{name}' has completed the task!")
-            self.state = AgentState.FINISHED
-
 
 class EnhancedFileSaver(FileSaver):
     # Properly declare file_tracker as a field with proper typing
@@ -267,15 +247,22 @@ class EnhancedFileSaver(FileSaver):
 
     async def execute(self, content: str, file_path: str, mode: str = "w") -> str:
         """Save content to a file and track it for download."""
-        # Ensure the file is saved inside the generated_files directory
-        safe_filename = os.path.basename(file_path)
-        absolute_file_path = os.path.join(FILES_DIR, safe_filename)
+        # Use the file_path directly to save in the workspace directory
+        # The parent FileSaver already saves to WORKSPACE_ROOT
 
-        # Call the parent's execute with the corrected path
-        result = await super().execute(content, absolute_file_path, mode)
+        # Call the parent's execute to save the file in the workspace
+        result = await super().execute(content, file_path, mode)
 
-        # Update result message to reflect the actual save location
-        result = result.replace(file_path, absolute_file_path)
+        # Get the actual file path from the result
+        import re
+        actual_path_match = re.search(r"saved to (.+)", result)
+        if actual_path_match:
+            absolute_file_path = actual_path_match.group(1)
+            safe_filename = os.path.basename(absolute_file_path)
+        else:
+            # Fallback if regex doesn't match
+            safe_filename = os.path.basename(file_path)
+            absolute_file_path = os.path.join(WORKSPACE_ROOT, safe_filename)
 
         # If file was saved successfully and we have a tracker
         if "successfully saved" in result and self.file_tracker:
@@ -320,7 +307,6 @@ class EnhancedFileSaver(FileSaver):
         content_type, _ = mimetypes.guess_type(file_path)
         return content_type or "application/octet-stream"
 
-# Update the EnhancedManus class with cancellation support
 
 class EnhancedManus(Manus):
     client_id: Optional[str] = Field(default=None)
@@ -344,7 +330,7 @@ class EnhancedManus(Manus):
             # Create a fresh tool collection with our enhanced tools
             self.available_tools = ToolCollection(
                 PythonExecute(),
-                GoogleSearch(),
+                WebSearch(),  # Updated from GoogleSearch to WebSearch
                 enhanced_file_saver,  # Use the enhanced version
                 Bash(),
                 PlanningTool(),
@@ -476,9 +462,6 @@ class FileTracker:
             for client_id in self.client_files:
                 self.client_files[client_id].discard(file_id)
 
-
-# Replace the ConnectionManager class in enhanced_server.py with this implementation
-# Make sure to replace the entire class, not just add methods
 
 class ConnectionManager:
     def __init__(self):
@@ -634,8 +617,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# Update the WebSocket endpoint function to handle cancel commands
-
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await manager.connect(websocket, client_id)
@@ -702,8 +683,6 @@ async def handle_request(request_data: RequestModel):
         return {"status": "error", "error": str(e)}
 
 
-
-
 @app.get("/api/files")
 async def list_files(client_id: Optional[str] = None):
     """List available files for a client."""
@@ -714,8 +693,6 @@ async def list_files(client_id: Optional[str] = None):
         # Return all files if no client_id specified
         return {"files": [file_info.to_dict() for file_info in manager.file_tracker.files.values()]}
 
-
-# Add this endpoint to your enhanced_server.py file, right after the "/api/files" endpoint
 
 @app.get("/api/files/{file_id}")
 async def get_file(file_id: str):
@@ -733,6 +710,7 @@ async def get_file(file_id: str):
         filename=file_info.file_name,
         media_type=file_info.content_type
     )
+
 
 # Serve static client HTML file if available
 @app.get("/")
