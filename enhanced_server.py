@@ -8,6 +8,9 @@ import uuid
 from typing import Dict, List, Optional, Callable, Any, Set
 from app.agent.base import BaseAgent, AgentState
 
+import argparse
+import ssl
+
 # Add aiohttp for HTML fetching in the MockBrowserTool
 import aiohttp
 import uvicorn
@@ -734,6 +737,32 @@ async def health_check():
 
 
 if __name__ == "__main__":
-    port = 2000
-    logger.info(f"Starting Enhanced OpenManus server on port {port}")
-    uvicorn.run("enhanced_server:app", host="127.0.0.1", port=port, log_level="info", reload=True)
+    # Create argument parser
+    parser = argparse.ArgumentParser(description="Start the OpenManus Enhanced Server")
+    parser.add_argument("--host", default="127.0.0.1", help="Host IP to bind (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=2000, help="Port to bind (default: 2000)")
+    parser.add_argument("--ssl-keyfile", help="Path to SSL key file")
+    parser.add_argument("--ssl-certfile", help="Path to SSL certificate file")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+
+    args = parser.parse_args()
+
+    logger.info(f"Starting Enhanced OpenManus server on {args.host}:{args.port}")
+
+    # Configure uvicorn settings
+    uvicorn_config = {
+        "app": "enhanced_server:app",
+        "host": args.host,
+        "port": args.port,
+        "log_level": "info",
+        "reload": args.reload
+    }
+
+    # Add SSL configurations if provided
+    if args.ssl_keyfile and args.ssl_certfile:
+        uvicorn_config["ssl_keyfile"] = args.ssl_keyfile
+        uvicorn_config["ssl_certfile"] = args.ssl_certfile
+        logger.info(f"SSL enabled with keyfile {args.ssl_keyfile} and certfile {args.ssl_certfile}")
+
+    # Start the server with the configured settings
+    uvicorn.run(**uvicorn_config)
