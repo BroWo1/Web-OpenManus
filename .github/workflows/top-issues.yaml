@@ -24,4 +24,4 @@ jobs:
           dashboard_show_total_reactions: true
           top_issues: true
           top_pull_requests: true
-          top_list_size: 32
+          top_list_size: 14

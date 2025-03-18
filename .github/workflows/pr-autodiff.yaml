@@ -1,8 +1,8 @@
 name: PR Diff Summarization
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, ready_for_review, reopened]
+  # pull_request:
+  #   branches: [main]
+  #   types: [opened, ready_for_review, reopened]
   issue_comment:
     types: [created]
 permissions:
@@ -36,7 +36,7 @@ jobs:
           ref: ${{ steps.get-pr-sha.outputs.pr_sha }}
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install dependencies
@@ -119,13 +119,9 @@ jobs:
                   print("No meaningful diff detected.")
                   exit(0)
 
-              try:
-                  comment = generate_comment(diff_content)
-                  post_comment(comment)
-                  print("Comment posted successfully.")
-              except Exception as e:
-                  print(f"Failed to process: {str(e)}")
-                  exit(1)
+              comment = generate_comment(diff_content)
+              post_comment(comment)
+              print("Comment posted successfully.")
           EOF
 
           python /tmp/_workflow_core.py
