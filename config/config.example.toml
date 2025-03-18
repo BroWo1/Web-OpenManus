@@ -1,11 +1,10 @@
 # Global LLM configuration
 [llm]
-model = "gpt-4o"                       # The LLM model to use
-base_url = "https://api.openai.com/v1" # API endpoint URL
-api_key = "sk-..."                     # Your API key
-max_tokens = 8192                      # Maximum number of tokens in the response
-temperature = 0.0                      # Controls randomness
-# max_input_tokens = 100000            # Maximum input tokens to use across all requests (set to null or delete this line for unlimited)
+model = "claude-3-7-sonnet-20250219"        # The LLM model to use
+base_url = "https://api.anthropic.com/v1/"  # API endpoint URL
+api_key = "YOUR_API_KEY"                    # Your API key
+max_tokens = 8192                           # Maximum number of tokens in the response
+temperature = 0.0                           # Controls randomness
 
 # [llm] #AZURE OPENAI:
 # api_type= 'azure'
@@ -26,11 +25,11 @@ temperature = 0.0                      # Controls randomness
 
 # Optional configuration for specific LLM models
 [llm.vision]
-model = "gpt-4o"                       # The vision model to use
-base_url = "https://api.openai.com/v1" # API endpoint URL for vision model
-api_key = "sk-..."                     # Your API key for vision model
-max_tokens = 8192                      # Maximum number of tokens in the response
-temperature = 0.0                      # Controls randomness for vision model
+model = "claude-3-7-sonnet-20250219"        # The vision model to use
+base_url = "https://api.anthropic.com/v1/"  # API endpoint URL for vision model
+api_key = "YOUR_API_KEY"                    # Your API key for vision model
+max_tokens = 8192                           # Maximum number of tokens in the response
+temperature = 0.0                           # Controls randomness for vision model
 
 # [llm.vision] #OLLAMA VISION:
 # api_type = 'ollama'

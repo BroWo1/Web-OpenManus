@@ -59,6 +59,9 @@ class BrowserSettings(BaseModel):
     proxy: Optional[ProxySettings] = Field(
         None, description="Proxy settings for the browser"
     )
+    max_content_length: int = Field(
+        2000, description="Maximum length for content retrieval operations"
+    )
 
 
 class AppConfig(BaseModel):
