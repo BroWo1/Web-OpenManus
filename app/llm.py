@@ -18,6 +18,7 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from app.bedrock import BedrockClient
 from app.config import LLMSettings, config
 from app.exceptions import TokenLimitExceeded
 from app.logger import logger  # Assuming a logger is set up in your app
@@ -225,6 +226,8 @@ class LLM:
                     api_key=self.api_key,
                     api_version=self.api_version,
                 )
+            elif self.api_type == "aws":
+                self.client = BedrockClient()
             else:
                 self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 

@@ -37,6 +37,18 @@ class ProxySettings(BaseModel):
 
 class SearchSettings(BaseModel):
     engine: str = Field(default="Google", description="Search engine the llm to use")
+    fallback_engines: List[str] = Field(
+        default_factory=lambda: ["DuckDuckGo", "Baidu"],
+        description="Fallback search engines to try if the primary engine fails",
+    )
+    retry_delay: int = Field(
+        default=60,
+        description="Seconds to wait before retrying all engines again after they all fail",
+    )
+    max_retries: int = Field(
+        default=3,
+        description="Maximum number of times to retry all engines when all fail",
+    )
 
 
 class BrowserSettings(BaseModel):
@@ -226,6 +238,11 @@ class Config:
     def workspace_root(self) -> Path:
         """Get the workspace root directory"""
         return WORKSPACE_ROOT
+
+    @property
+    def root_path(self) -> Path:
+        """Get the root path of the application"""
+        return PROJECT_ROOT
 
 
 config = Config()

@@ -81,6 +81,11 @@ source .venv/bin/activate  # Unix/macOS의 경우
 uv pip install -r requirements.txt
 ```
 
+### 브라우저 자동화 도구 (선택사항)
+```bash
+playwright install
+```
+
 ## 설정 방법
 
 OpenManus를 사용하려면 사용하는 LLM API에 대한 설정이 필요합니다. 아래 단계를 따라 설정을 완료하세요:
@@ -119,7 +124,12 @@ python main.py
 
 이후 터미널에서 아이디어를 작성하세요!
 
-unstable 버전을 실행하려면 아래 명령어를 사용할 수도 있습니다:
+MCP 도구 버전을 사용하려면 다음을 실행하세요:
+```bash
+python run_mcp.py
+```
+
+불안정한 멀티 에이전트 버전을 실행하려면 다음을 실행할 수 있습니다:
 
 ```bash
 python run_flow.py
