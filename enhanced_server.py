@@ -1,4 +1,5 @@
 # enhanced_server.py
+import time
 
 import asyncio
 import json
@@ -112,7 +113,7 @@ class FileInfo(BaseModel):
 # Web content fetch tool that uses crawl4ai for extracting structured content
 # Keeping the original WebContentTool as instructed
 class WebContentTool(BaseTool):
-    name: str = "browser_use"  # Keep same name for backward compatibility
+    name: str = "web_content"  # Keep same name for backward compatibility
     description: str = "Fetch and extract structured content from websites using crawl4ai, or read local files"
     parameters: dict = {
         "type": "object",
@@ -325,21 +326,23 @@ class EnhancedManus(Manus):
         # Call the parent class's __init__ first
         super().__init__(**data)
 
-        # Initialize tools collection with the enhanced FileSaver
+        # Initialize tools collection with proper tool instances
         if self.file_tracker is not None:
             # Create the enhanced file saver with the file_tracker
             enhanced_file_saver = EnhancedFileSaver(file_tracker=self.file_tracker)
 
+            terminate_tool = Terminate()  # Create a properly initialized terminate tool
+
             # Create a fresh tool collection with our enhanced tools
             self.available_tools = ToolCollection(
                 PythonExecute(),
-                WebSearch(),  # Updated from GoogleSearch to WebSearch
-                enhanced_file_saver,  # Use the enhanced version
+                WebSearch(),
+                enhanced_file_saver,
                 Bash(),
                 PlanningTool(),
                 StrReplaceEditor(),
-                WebContentTool(),  # Use the simplified web content tool
-                Terminate()
+                WebContentTool(),
+                terminate_tool  # Use the explicitly created instance
             )
 
     async def run(self, request: Optional[str] = None) -> str:
@@ -376,17 +379,38 @@ class EnhancedManus(Manus):
         return await super().step()
 
     async def think(self) -> bool:
-        """Thinking phase with cancellation check and progress updates."""
+        """Process current state with enhanced thought display."""
         # Check for cancellation first
         if self.cancel_requested:
             return False
 
+        # Send status update
         if self.update_callback:
             await self.update_callback(
                 self.client_id,
-                {"status": "thinking", "message": "Thinking..."}
+                {"status": "thinking", "message": "Thinking about next actions..."}
             )
-        return await super().think()
+
+        # Call the parent's think method
+        result = await super().think()
+
+        # After thinking completes, capture details about the decision
+        if result and hasattr(self, 'tool_calls') and self.tool_calls:
+            tool = self.tool_calls[0]
+            tool_name = tool.function.name if hasattr(tool, 'function') else "unknown_tool"
+            tool_args = tool.function.arguments if hasattr(tool, 'function') else "{}"
+
+            # Send detailed reasoning
+            if self.update_callback:
+                await self.update_callback(
+                    self.client_id,
+                    {
+                        "status": "decision",
+                        "message": f"Agent decided to use tool: {tool_name} with parameters: {tool_args}"
+                    }
+                )
+
+        return result
 
     async def execute_tool(self, command) -> str:
         """Execute a tool with cancellation check and progress updates."""
@@ -427,6 +451,32 @@ class EnhancedManus(Manus):
                 {"status": "tool_result", "message": f"Tool result: {result_summary}"}
             )
         return result
+
+    async def _handle_special_tool(self, name: str, result: Any, **kwargs) -> None:
+        """Handle special tool execution and state changes with improved error handling"""
+        try:
+            # First process with parent handler
+            # Add null check for any objects that might be None
+            if name.lower() == "terminate":
+                # Handle terminate tool specially
+                self.state = AgentState.FINISHED
+                if self.update_callback:
+                    await self.update_callback(
+                        self.client_id,
+                        {"status": "terminated", "message": "Task completed successfully"}
+                    )
+                # Skip calling parent handler which might try to access None objects
+                return
+
+            await super()._handle_special_tool(name, result, **kwargs)
+
+        except Exception as e:
+            logger.error(f"Error handling special tool {name}: {str(e)}")
+            if self.update_callback:
+                await self.update_callback(
+                    self.client_id,
+                    {"status": "error", "message": f"Error in special tool execution: {str(e)}"}
+                )
 
 
 class FileTracker:
@@ -504,10 +554,21 @@ class ConnectionManager:
     async def send_message(self, client_id: str, message):
         """Send a message to a specific client."""
         if client_id in self.active_connections:
-            if isinstance(message, str):
-                await self.active_connections[client_id].send_text(message)
-            else:
-                await self.active_connections[client_id].send_text(json.dumps(message))
+            try:
+                if isinstance(message, str):
+                    await self.active_connections[client_id].send_text(message)
+                else:
+                    # Add timestamp to messages
+                    if isinstance(message, dict):
+                        message["timestamp"] = time.time()
+
+                    # Log the message for debugging
+                    if isinstance(message, dict) and "message" in message:
+                        logger.info(f"Sending to {client_id}: {message['status']} - {message['message'][:100]}...")
+
+                    await self.active_connections[client_id].send_text(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Error sending message to client {client_id}: {e}")
 
     async def cancel_processing(self, client_id: str):
         """Cancel the current processing task for a client."""
@@ -564,7 +625,7 @@ class ConnectionManager:
                 del self.processing_tasks[client_id]
 
     async def _process_request_impl(self, request: str, client_id: str):
-        """Implementation of request processing."""
+        """Implementation of request processing with improved feedback."""
         agent = self.agent_instances[client_id]
 
         # Store original messages to track new ones
@@ -577,6 +638,12 @@ class ConnectionManager:
             await self.send_message(
                 client_id,
                 {"status": "processing", "message": "Starting to process your request..."}
+            )
+
+            # Explicitly send a message asking the agent to show thoughts
+            await self.send_message(
+                client_id,
+                {"status": "info", "message": "Analyzing request and formulating approach..."}
             )
 
             # Process request with the agent
@@ -597,6 +664,15 @@ class ConnectionManager:
             client_files = self.file_tracker.get_client_files(client_id)
             file_data = [file_info.to_dict() for file_info in client_files]
 
+            # Send a summary of what happened during processing
+            await self.send_message(
+                client_id,
+                {
+                    "status": "summary",
+                    "message": f"Processed request with {len(new_messages)} new messages and {len(file_data)} files created"
+                }
+            )
+
             # Send the full result to the client
             await self.send_message(
                 client_id,
@@ -613,7 +689,7 @@ class ConnectionManager:
             logger.error(f"Error processing request from client {client_id}: {e}")
             await self.send_message(
                 client_id,
-                {"status": "error", "error": str(e)}
+                {"status": "error", "error": str(e), "details": str(type(e))}
             )
 
 
@@ -624,6 +700,12 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await manager.connect(websocket, client_id)
     try:
+        # Send a test message to verify connection is working properly
+        await manager.send_message(
+            client_id,
+            {"status": "connected", "message": "Connected to OpenManus server. Ready to process requests."}
+        )
+
         while True:
             data = await websocket.receive_text()
             try:
